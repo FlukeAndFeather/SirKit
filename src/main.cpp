@@ -11,7 +11,7 @@
 void toggle_ir(void);
 
 /*---------------Module Variables---------------------------*/
-uint16_t ir_freq = 10000; // 10kHz
+uint16_t ir_freq = 1000; // 1kHz
 uint16_t ir_period = 1000000 / ir_freq; // in microseconds
 uint16_t ir_switch = ir_period / 2;
 IntervalTimer ir_timer;
@@ -33,11 +33,9 @@ void setup() {
 
 void loop() {
   // Check for signal
-  /*
   uint16_t ir_signal = analogRead(IR_R_PIN);
   Serial.println(ir_signal);
-  delay(1000);
-  */
+  delay(1066);
 }
 
 /*----------------Module Functions--------------------------*/
