@@ -1,36 +1,49 @@
 #include <Arduino.h>
+#include <Metro.h>
 
 /*---------------Constants----------------------------------*/
 // IR
-#define IR_E_PIN1 16
-#define IR_E_PIN2 21
+#define IR_E1_PIN 16
+#define IR_E2_PIN 21
 #define IR_L_PIN 5
+#define IR_M_PIN 111 // !!!FIXME!!!
 #define IR_R_PIN 2
-#define IR_T_PIN 4
+#define IR_A_PIN 4
 
 // Driving
-#define SPD_PIN_RIGHT 22 //Based on forward orientation.
-#define DIR_PIN_RIGHT 14
-#define SPD_PIN_LEFT 23
-#define DIR_PIN_LEFT 15
+#define SPD_L_PIN 23 //Based on forward orientation.
+#define DIR_L_PIN 15
+#define SPD_R_PIN 22
+#define DIR_R_PIN 14
 #define MAX_SPD 110
 #define ADJUST_FACTOR 0.65
 
+// Timer durations (msec)
+#define BACKING_T 750
+#define PIVOTING_T 750
+#define DEPRESSING_T 250
+#define RELOADING_T 2000
+#define FIRING_T 5000
+
+// Limit switch
+#define BUMP_PIN 111 // !!!FIXME!!!
+
 /*---------------Enumerations-------------------------------*/
 typedef enum { 
-  SENSOR_L, SENSOR_R, SENSOR_T
+  SENSOR_L, SENSOR_M, SENSOR_R, SENSOR_A
 } Sensor_t;
 
 typedef enum {
   STATE_DRIVING, STATE_BACKING1, STATE_PIVOTING1, STATE_DEPRESSING, 
   STATE_RELOADING, STATE_BACKING2, STATE_PIVOTING2, STATE_SEEKING, 
-  STATE_FIRING, STATE_STOPPING
+  STATE_FIRING, STATE_PIVOTING3, STATE_STOPPING
 } States_t;
 
 /*---------------Module Function Prototypes-----------------*/
 // Read sensors
-String readKeyboard(void);
 bool overTape(uint32_t now, Sensor_t sensor);
+bool bump(void);
+bool navExpire(void);
 
 // Driving
 void driveOnTape(void);
@@ -41,10 +54,11 @@ void setDir(bool leftDir, bool rightDir);
 void setSpd(uint16_t left, uint16_t right);
 
 // Tape sensing
-uint8_t readTape(void);
-bool isTapeAligned(uint32_t now);
-bool isTapeLeft(uint32_t now);
-bool isTapeRight(uint32_t now);
+bool isTapeAligned(void);
+bool isTapeLeft(void);
+bool isTapeRight(void);
+bool isTapeAxle(void);
+bool isTapeMiddle(void);
 
 // Handle events
 void handleDriving(void);
@@ -61,16 +75,15 @@ void respondKeyboard(String key);
 /*---------------Interrupt Handler Prototypes---------------*/
 void toggleIr(void);
 void irRisingL(void);
+void irRisingM(void);
 void irRisingR(void);
-void irRisingT(void);
+void irRisingA(void);
 
 /*---------------Module Variables---------------------------*/
 static States_t state;
 
 // Driving
-static bool dirBwd = false;
-static uint16_t spd = MAX_SPD; // From 0 to 1023
-static IntervalTimer navTimer;
+static Metro navTimer = Metro(0);
 
 // IR emit
 static uint16_t irFreq = 450; // 1kHz
@@ -81,8 +94,9 @@ volatile static bool irHigh;
 
 // IR receive
 volatile static uint32_t lastRiseL;
+volatile static uint32_t lastRiseM;
 volatile static uint32_t lastRiseR;
-volatile static uint32_t lastRiseT;
+volatile static uint32_t lastRiseA;
 
 /*---------------Teensy Main Functions----------------------*/
 void setup() {
@@ -91,52 +105,96 @@ void setup() {
   while(!Serial);
 
   // IR pins
-  pinMode(IR_E_PIN1, OUTPUT);
-  pinMode(IR_E_PIN2, OUTPUT);
+  pinMode(IR_E1_PIN, OUTPUT);
+  pinMode(IR_E2_PIN, OUTPUT);
   pinMode(IR_L_PIN, INPUT);
   attachInterrupt(IR_L_PIN, irRisingL, RISING);
+  pinMode(IR_M_PIN, INPUT);
+  attachInterrupt(IR_M_PIN, irRisingM, RISING);
   pinMode(IR_R_PIN, INPUT);
   attachInterrupt(IR_R_PIN, irRisingR, RISING);
-  pinMode(IR_T_PIN, INPUT);
-  attachInterrupt(IR_T_PIN, irRisingT, RISING);
+  pinMode(IR_A_PIN, INPUT);
+  attachInterrupt(IR_A_PIN, irRisingA, RISING);
   irTimer.begin(toggleIr, irSwitch);
   irHigh = true;
 
   // SPD and DIR pins
-  pinMode(SPD_PIN_LEFT, OUTPUT);
-  pinMode(DIR_PIN_LEFT, OUTPUT);
-  pinMode(SPD_PIN_RIGHT, OUTPUT);
-  pinMode(DIR_PIN_RIGHT, OUTPUT);
+  pinMode(SPD_L_PIN, OUTPUT);
+  pinMode(DIR_L_PIN, OUTPUT);
+  pinMode(SPD_R_PIN, OUTPUT);
+  pinMode(DIR_R_PIN, OUTPUT);
+
+  // Bump pin
+  pinMode(BUMP_PIN, INPUT);
 
   // Start the motor
   state = STATE_DRIVING;
-  setDir(dirBwd);
-  setSpd(spd, spd);
+  handleDriving();
 }
 
 void loop() {
-  // Read keyboard
-  String key = readKeyboard();
-
   switch (state) {
     case STATE_DRIVING:
       driveOnTape();
+      if (bump()) {
+        state = STATE_BACKING1;
+        handleBacking();
+      }
+      break;
+    case STATE_BACKING1:
+      if (navExpire()) {
+        state = STATE_PIVOTING1;
+        handlePivoting();
+      }
       break;
     case STATE_PIVOTING1:
+      if (navExpire()) {
+        state = STATE_DEPRESSING;
+        handleDepressing();
+      }
       break;
     case STATE_DEPRESSING:
+      if (bump()) {
+        state = STATE_RELOADING;
+        handleReloading();
+      }
       break;
     case STATE_RELOADING:
+      if (navExpire()) {
+        state = STATE_BACKING2;
+        handleBacking();
+      }
       break;
     case STATE_BACKING2:
+      if (isTapeAxle()) {
+        state = STATE_PIVOTING2;
+        handlePivoting();
+      }
       break;
     case STATE_PIVOTING2:
+      if (isTapeMiddle()) {
+        state = STATE_SEEKING;
+        handleSeeking();
+      }
       break;
     case STATE_SEEKING:
       driveOnTape();
+      if (isTapeAxle()) {
+        state = STATE_FIRING;
+        handleFiring();
+      }
       break;
     case STATE_FIRING:
+      if (navExpire()) {
+        state = STATE_PIVOTING3;
+        handlePivoting();
+      }
       break;
+    case STATE_PIVOTING3:
+      if (isTapeMiddle()) {
+        state = STATE_DRIVING;
+        handleDriving();
+      }
     case STATE_STOPPING:
       break;
   }
@@ -162,8 +220,11 @@ bool overTape(uint32_t now, Sensor_t sensor) {
     case SENSOR_R:
       lastRise = lastRiseR;
       break;
-    case SENSOR_T:
-      lastRise = lastRiseT;
+    case SENSOR_M:
+      lastRise = lastRiseM;
+      break;
+    case SENSOR_A:
+      lastRise = lastRiseA;
       break;
   }
   uint32_t since_rise = now - lastRise;
@@ -174,14 +235,23 @@ bool overTape(uint32_t now, Sensor_t sensor) {
   }
 }
 
+// Detect limit switch bump
+bool bump(void) {
+  return digitalRead(BUMP_PIN);
+}
+
+// Navigation timer expires
+bool navExpire(void) {
+  return navTimer.check();
+}
+
 // Driving
 void driveOnTape(void) {
-  uint32_t now = micros();
-  if (isTapeAligned(now)) {
+  if (isTapeAligned()) {
     driveStraight();
-  } else if (isTapeLeft(now)) {
+  } else if (isTapeLeft()) {
     rotate(true);
-  } else if (isTapeRight(now)) {
+  } else if (isTapeRight()) {
     rotate(false);
   } else {
     // This shouldn't happen
@@ -190,100 +260,139 @@ void driveOnTape(void) {
 }
 
 void driveStraight(void) {
-  setDir(dirBwd);
+  setDir(true);
   setSpd(MAX_SPD, MAX_SPD);
 }
 
 void rotate(bool turnLeft) {
-  uint16_t adjustSpd = ADJUST_FACTOR * spd;
+  uint16_t adjustSpd = ADJUST_FACTOR * MAX_SPD;
   setSpd(adjustSpd, adjustSpd);
 
-  bool leftBwd = turnLeft;
-  bool rightBwd = !turnLeft;
-  setDir(leftBwd, rightBwd);
+  bool left = turnLeft;
+  bool right = !turnLeft;
+  setDir(left, right);
 }
 
 void setDir(bool dir) {
-  digitalWrite(DIR_PIN_LEFT, dir);
-  digitalWrite(DIR_PIN_RIGHT, dir);
+  digitalWrite(DIR_L_PIN, dir);
+  digitalWrite(DIR_R_PIN, dir);
 }
 
 void setDir(bool leftDir, bool rightDir) {
-  digitalWrite(DIR_PIN_LEFT, leftDir);
-  digitalWrite(DIR_PIN_RIGHT, rightDir);
+  digitalWrite(DIR_L_PIN, leftDir);
+  digitalWrite(DIR_R_PIN, rightDir);
 }
 
 void setSpd(uint16_t left, uint16_t right) {
-  analogWrite(SPD_PIN_LEFT, left);
-  analogWrite(SPD_PIN_RIGHT, right);
+  analogWrite(SPD_L_PIN, left);
+  analogWrite(SPD_L_PIN, right);
 }
 
 // Tape sensing
-uint8_t readTape(void);
-
-// Tape aligned when it's between L and R
-bool isTapeAligned(uint32_t now) {
-  bool L = overTape(now, SENSOR_L);
-  bool R = overTape(now, SENSOR_R);
+// Tape aligned when sensors straddle it
+bool isTapeAligned(void) {
+  uint32_t now = micros();
+  Sensor_t l_sensor = state == STATE_DRIVING ? SENSOR_L : SENSOR_M;
+  Sensor_t r_sensor = state == STATE_DRIVING ? SENSOR_M : SENSOR_R;
+  bool L = overTape(now, l_sensor);
+  bool R = overTape(now, r_sensor);
   return !L && !R;
 }
 
-bool isTapeLeft(uint32_t now) {
-  bool L = overTape(now, SENSOR_L);
-  bool R = overTape(now, SENSOR_R);
-  bool T = overTape(now, SENSOR_T);
+bool isTapeLeft(void) {
+  uint32_t now = micros();
+  Sensor_t l_sensor = state == STATE_DRIVING ? SENSOR_L : SENSOR_M;
+  Sensor_t r_sensor = state == STATE_DRIVING ? SENSOR_M : SENSOR_R;
+  Sensor_t t_sensor = state == STATE_DRIVING ? SENSOR_R : SENSOR_L;
+  bool L = overTape(now, l_sensor);
+  bool R = overTape(now, r_sensor);
+  bool T = overTape(now, t_sensor);
   return L && !R && !T;
 }
 
-bool isTapeRight(uint32_t now) {
-  bool L = overTape(now, SENSOR_L);
-  bool R = overTape(now, SENSOR_R);
-  bool T = overTape(now, SENSOR_T);
+bool isTapeRight(void) {
+  uint32_t now = micros();
+  Sensor_t l_sensor = state == STATE_DRIVING ? SENSOR_L : SENSOR_M;
+  Sensor_t r_sensor = state == STATE_DRIVING ? SENSOR_M : SENSOR_R;
+  Sensor_t t_sensor = state == STATE_DRIVING ? SENSOR_R : SENSOR_L;
+  bool L = overTape(now, l_sensor);
+  bool R = overTape(now, r_sensor);
+  bool T = overTape(now, t_sensor);
   return !L && R && !T;
 }
 
+bool isTapeAxle(void) {
+  uint32_t now = micros();
+  return overTape(now, SENSOR_A);
+}
+
+bool isTapeMiddle(void) {
+  uint32_t now = micros();
+  return overTape(now, SENSOR_M);
+}
+
 // Handle events
-void handleReverse(void) {
-  // Come to a stop for 0.25s
-  setSpd(0, 0);
-  delay(250);
-
-  // Go backwards
-  dirBwd = false;
-  setDir(dirBwd);
-  setSpd(spd, spd);
+void handleDriving(void) {
+  setSpd(MAX_SPD, MAX_SPD);
+  setDir(true);
 }
 
-void handleForward(void) {
-  // Come to a stop for 0.25s
+void handleBacking(void) {
+  navTimer.interval(BACKING_T);
+  navTimer.reset();
+  // Come to a stop
   setSpd(0, 0);
-  delay(250);
+  delay(100);
+  // Back up
+  setSpd(MAX_SPD, MAX_SPD);
+  setDir(false);
+}
 
+void handlePivoting(void) {
+  navTimer.interval(PIVOTING_T);
+  navTimer.reset();
+  // Come to a stop
+  setSpd(0, 0);
+  delay(100);
+  // Rotate right
+  rotate(false);
+}
+
+void handleDepressing(void) {
+  navTimer.interval(DEPRESSING_T);
+  navTimer.reset();
+  // Come to a stop
+  setSpd(0, 0);
+  delay(100);
+  // Rotate right
+  rotate(false);
+}
+
+void handleReloading(void) {
+  navTimer.interval(RELOADING_T);
+  navTimer.reset();
+}
+
+void handleSeeking(void) {
+  // Come to a stop
+  setSpd(0, 0);
+  delay(100);
   // Go forwards
-  dirBwd = true;
-  setDir(dirBwd);
-  setSpd(spd, spd);
+  setSpd(MAX_SPD, MAX_SPD);
+  setDir(true);
 }
 
-void handleStopping(void) {
-  setSpd(0, 0);
-}
-
-// Utilities
-void respondKeyboard(String key) {
-  if (key == " ") {
-    state = STATE_REVERSE;
-    handleReverse();
-  } else if (key == "s") {
-    state = STATE_STOPPING;
-    handleStopping();
-  }
+void handleFiring(void) {
+  Serial.println("FIRING");
+  // !!!FIXME!!!
+  navTimer.interval(FIRING_T);
+  navTimer.reset();
 }
 
 /*---------------Interrupt Handler Prototypes---------------*/
 void toggleIr(void) {
-  digitalWrite(IR_E_PIN1, irHigh ? HIGH : LOW);
-  digitalWrite(IR_E_PIN2, irHigh ? HIGH : LOW);
+  digitalWrite(IR_E1_PIN, irHigh ? HIGH : LOW);
+  digitalWrite(IR_E2_PIN, irHigh ? HIGH : LOW);
   irHigh = !irHigh;
 }
 
@@ -291,10 +400,14 @@ void irRisingL(void) {
   lastRiseL = micros();
 }
 
+void irRisingM(void) {
+  lastRiseM = micros();
+}
+
 void irRisingR(void) {
   lastRiseR = micros();
 }
 
-void irRisingT(void) {
-  lastRiseT = micros();
+void irRisingA(void) {
+  lastRiseA = micros();
 }
