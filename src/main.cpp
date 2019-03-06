@@ -4,7 +4,7 @@
 // IR
 #define IR_E_PIN1 16
 #define IR_E_PIN2 21
-#define IR_L_PIN 3
+#define IR_L_PIN 5
 #define IR_R_PIN 2
 #define IR_T_PIN 4
 
@@ -13,8 +13,8 @@
 #define DIR_PIN_RIGHT 14
 #define SPD_PIN_LEFT 23
 #define DIR_PIN_LEFT 15
-#define MAX_SPD 120
-#define ADJUST_FACTOR 0.5
+#define MAX_SPD 110
+#define ADJUST_FACTOR 0.65
 
 /*---------------Enumerations-------------------------------*/
 typedef enum { 
@@ -27,10 +27,6 @@ typedef enum {
   STATE_FIRING, STATE_STOPPING, STATE_REVERSE
 } States_t;
 
-typedef enum {
-  DIR_FORWARD, DIR_BACKWARD
-} Direction_t;
-
 /*---------------Module Function Prototypes-----------------*/
 // Read sensors
 String readKeyboard(void);
@@ -39,10 +35,12 @@ bool overTape(uint32_t now, Sensor_t sensor);
 
 // Driving
 void driveOnTape(void);
+void driveStraight(void);
 void adjustRight(void);
 void adjustLeft(void);
-void setDir(Direction_t dir);
-void setDir(Direction_t leftDir, Direction_t rightDir);
+void rotate(bool turnLeft);
+void setDir(bool dir);
+void setDir(bool leftDir, bool rightDir);
 void setSpd(uint16_t left, uint16_t right);
 
 // Tape sensing
@@ -69,7 +67,7 @@ void irRisingT(void);
 static States_t state;
 
 // Driving
-static Direction_t dir = DIR_FORWARD;
+static bool dirBwd = false;
 static uint16_t spd = MAX_SPD; // From 0 to 1023
 static IntervalTimer navTimer;
 
@@ -111,7 +109,7 @@ void setup() {
 
   // Start the motor
   state = STATE_DRIVING;
-  setDir(dir);
+  setDir(dirBwd);
   setSpd(spd, spd);
 }
 
@@ -129,31 +127,38 @@ void loop() {
     case STATE_STOPPING:
       break;
   }
-
-  respondKeyboard(key);
 }
 
 /*----------------Module Functions--------------------------*/
 void driveOnTape(void) {
   uint32_t now = micros();
   if (isTapeAligned(now)) {
-    // keep on driving
+    //Serial.println("Aligned");
+    driveStraight();
   } else if (isTapeLeft(now)) {
+    //Serial.println("Tape left");
     adjustLeft();
   } else if (isTapeRight(now)) {
+    //Serial.println("Tape right");
     adjustRight();
   } else {
     // This shouldn't happen
-    Serial.println("This shouldn't happen");
+    //Serial.println("Both tape");
+    adjustLeft();
   }
 }
 
+void driveStraight(void) {
+  setDir(dirBwd);
+  setSpd(MAX_SPD, MAX_SPD);
+}
+
 void adjustLeft(void) {
-  setSpd(MAX_SPD * ADJUST_FACTOR, MAX_SPD);
+  rotate(true);
 }
 
 void adjustRight(void) {
-  setSpd(MAX_SPD, MAX_SPD * ADJUST_FACTOR);
+  rotate(false);
 }
 
 // Tape aligned when it's between L and R
@@ -213,13 +218,22 @@ void irRisingT(void) {
   lastRiseT = micros();
 }
 
-void setDir(Direction_t dir) {
+void setDir(bool dir) {
   digitalWrite(DIR_PIN_LEFT, dir);
   digitalWrite(DIR_PIN_RIGHT, dir);
 }
-void setDir(Direction_t leftDir, Direction_t rightDir) {
+void setDir(bool leftDir, bool rightDir) {
   digitalWrite(DIR_PIN_LEFT, leftDir);
   digitalWrite(DIR_PIN_RIGHT, rightDir);
+}
+
+void rotate(bool turnLeft) {
+  uint16_t adjustSpd = ADJUST_FACTOR * spd;
+  setSpd(adjustSpd, adjustSpd);
+
+  bool leftBwd = turnLeft;
+  bool rightBwd = !turnLeft;
+  setDir(leftBwd, rightBwd);
 }
 
 void setSpd(uint16_t left, uint16_t right) {
@@ -233,8 +247,8 @@ void handleReverse(void) {
   delay(250);
 
   // Go backwards
-  dir = DIR_BACKWARD;
-  setDir(dir);
+  dirBwd = false;
+  setDir(dirBwd);
   setSpd(spd, spd);
 }
 
@@ -244,8 +258,8 @@ void handleForward(void) {
   delay(250);
 
   // Go forwards
-  dir = DIR_FORWARD;
-  setDir(dir);
+  dirBwd = true;
+  setDir(dirBwd);
   setSpd(spd, spd);
 }
 
