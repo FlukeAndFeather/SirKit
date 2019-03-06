@@ -22,9 +22,9 @@ typedef enum {
 } Sensor_t;
 
 typedef enum {
-  STATE_DRIVING, STATE_BACKING_LEFT, STATE_DEPRESSING,
-  STATE_RELOADING, STATE_BACKING_RIGHT, STATE_REVERSING,
-  STATE_FIRING, STATE_STOPPING, STATE_REVERSE
+  STATE_DRIVING, STATE_BACKING1, STATE_PIVOTING1, STATE_DEPRESSING, 
+  STATE_RELOADING, STATE_BACKING2, STATE_PIVOTING2, STATE_SEEKING, 
+  STATE_FIRING, STATE_STOPPING
 } States_t;
 
 /*---------------Module Function Prototypes-----------------*/
@@ -47,9 +47,13 @@ bool isTapeLeft(uint32_t now);
 bool isTapeRight(uint32_t now);
 
 // Handle events
-void handleReverse(void);
-void handleForward(void);
-void handleStopping(void);
+void handleDriving(void);
+void handleBacking(void);
+void handlePivoting(void);
+void handleDepressing(void);
+void handleReloading(void);
+void handleSeeking(void);
+void handleFiring(void);
 
 // Utilities
 void respondKeyboard(String key);
@@ -118,8 +122,20 @@ void loop() {
     case STATE_DRIVING:
       driveOnTape();
       break;
-    case STATE_REVERSE:
+    case STATE_PIVOTING1:
+      break;
+    case STATE_DEPRESSING:
+      break;
+    case STATE_RELOADING:
+      break;
+    case STATE_BACKING2:
+      break;
+    case STATE_PIVOTING2:
+      break;
+    case STATE_SEEKING:
       driveOnTape();
+      break;
+    case STATE_FIRING:
       break;
     case STATE_STOPPING:
       break;
@@ -215,14 +231,15 @@ bool isTapeAligned(uint32_t now) {
 bool isTapeLeft(uint32_t now) {
   bool L = overTape(now, SENSOR_L);
   bool R = overTape(now, SENSOR_R);
-  return L && !R;
+  bool T = overTape(now, SENSOR_T);
+  return L && !R && !T;
 }
 
 bool isTapeRight(uint32_t now) {
   bool L = overTape(now, SENSOR_L);
   bool R = overTape(now, SENSOR_R);
-  //bool T = overTape(now, SENSOR_T);
-  return !L && R; // && !T [FIXME];
+  bool T = overTape(now, SENSOR_T);
+  return !L && R && !T;
 }
 
 // Handle events
