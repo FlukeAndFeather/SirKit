@@ -30,14 +30,11 @@ typedef enum {
 /*---------------Module Function Prototypes-----------------*/
 // Read sensors
 String readKeyboard(void);
-bool timerExpired(void);
 bool overTape(uint32_t now, Sensor_t sensor);
 
 // Driving
 void driveOnTape(void);
 void driveStraight(void);
-void adjustRight(void);
-void adjustLeft(void);
 void rotate(bool turnLeft);
 void setDir(bool dir);
 void setDir(bool leftDir, bool rightDir);
@@ -57,7 +54,7 @@ void handleStopping(void);
 // Utilities
 void respondKeyboard(String key);
 
-/*---------------Interrupt Handlers Prototypes--------------*/
+/*---------------Interrupt Handler Prototypes---------------*/
 void toggleIr(void);
 void irRisingL(void);
 void irRisingR(void);
@@ -129,57 +126,17 @@ void loop() {
   }
 }
 
-/*----------------Module Functions--------------------------*/
-void driveOnTape(void) {
-  uint32_t now = micros();
-  if (isTapeAligned(now)) {
-    //Serial.println("Aligned");
-    driveStraight();
-  } else if (isTapeLeft(now)) {
-    //Serial.println("Tape left");
-    adjustLeft();
-  } else if (isTapeRight(now)) {
-    //Serial.println("Tape right");
-    adjustRight();
-  } else {
-    // This shouldn't happen
-    //Serial.println("Both tape");
-    adjustLeft();
+/*---------------Module Functions---------------------------*/
+// Read sensors
+String readKeyboard(void) {
+  String result = "";
+  if (Serial.available()) {
+    result = Serial.readString();
   }
+  return result;
 }
 
-void driveStraight(void) {
-  setDir(dirBwd);
-  setSpd(MAX_SPD, MAX_SPD);
-}
-
-void adjustLeft(void) {
-  rotate(true);
-}
-
-void adjustRight(void) {
-  rotate(false);
-}
-
-// Tape aligned when it's between L and R
-bool isTapeAligned(uint32_t now) {
-  bool L = overTape(now, SENSOR_L);
-  bool R = overTape(now, SENSOR_R);
-  return !L && !R;
-}
-bool isTapeLeft(uint32_t now) {
-  bool L = overTape(now, SENSOR_L);
-  bool R = overTape(now, SENSOR_R);
-  return L && !R;
-}
-bool isTapeRight(uint32_t now) {
-  bool L = overTape(now, SENSOR_L);
-  bool R = overTape(now, SENSOR_R);
-  //bool T = overTape(now, SENSOR_T);
-  return !L && R; // && !T [FIXME];
-}
-
-// Read an individual sensor
+// Read an individual IR sensor
 bool overTape(uint32_t now, Sensor_t sensor) {
   uint32_t lastRise = 0;
   switch (sensor) {
@@ -201,30 +158,24 @@ bool overTape(uint32_t now, Sensor_t sensor) {
   }
 }
 
-/*---------------Interrupt Handlers-------------------------*/
-void toggleIr(void) {
-  digitalWrite(IR_E_PIN1, irHigh ? HIGH : LOW);
-  digitalWrite(IR_E_PIN2, irHigh ? HIGH : LOW);
-  irHigh = !irHigh;
+// Driving
+void driveOnTape(void) {
+  uint32_t now = micros();
+  if (isTapeAligned(now)) {
+    driveStraight();
+  } else if (isTapeLeft(now)) {
+    rotate(true);
+  } else if (isTapeRight(now)) {
+    rotate(false);
+  } else {
+    // This shouldn't happen
+    Serial.println("Tape sensing error");
+  }
 }
 
-void irRisingL(void) {
-  lastRiseL = micros();
-}
-void irRisingR(void) {
-  lastRiseR = micros();
-}
-void irRisingT(void) {
-  lastRiseT = micros();
-}
-
-void setDir(bool dir) {
-  digitalWrite(DIR_PIN_LEFT, dir);
-  digitalWrite(DIR_PIN_RIGHT, dir);
-}
-void setDir(bool leftDir, bool rightDir) {
-  digitalWrite(DIR_PIN_LEFT, leftDir);
-  digitalWrite(DIR_PIN_RIGHT, rightDir);
+void driveStraight(void) {
+  setDir(dirBwd);
+  setSpd(MAX_SPD, MAX_SPD);
 }
 
 void rotate(bool turnLeft) {
@@ -236,11 +187,45 @@ void rotate(bool turnLeft) {
   setDir(leftBwd, rightBwd);
 }
 
+void setDir(bool dir) {
+  digitalWrite(DIR_PIN_LEFT, dir);
+  digitalWrite(DIR_PIN_RIGHT, dir);
+}
+
+void setDir(bool leftDir, bool rightDir) {
+  digitalWrite(DIR_PIN_LEFT, leftDir);
+  digitalWrite(DIR_PIN_RIGHT, rightDir);
+}
+
 void setSpd(uint16_t left, uint16_t right) {
   analogWrite(SPD_PIN_LEFT, left);
   analogWrite(SPD_PIN_RIGHT, right);
 }
 
+// Tape sensing
+uint8_t readTape(void);
+
+// Tape aligned when it's between L and R
+bool isTapeAligned(uint32_t now) {
+  bool L = overTape(now, SENSOR_L);
+  bool R = overTape(now, SENSOR_R);
+  return !L && !R;
+}
+
+bool isTapeLeft(uint32_t now) {
+  bool L = overTape(now, SENSOR_L);
+  bool R = overTape(now, SENSOR_R);
+  return L && !R;
+}
+
+bool isTapeRight(uint32_t now) {
+  bool L = overTape(now, SENSOR_L);
+  bool R = overTape(now, SENSOR_R);
+  //bool T = overTape(now, SENSOR_T);
+  return !L && R; // && !T [FIXME];
+}
+
+// Handle events
 void handleReverse(void) {
   // Come to a stop for 0.25s
   setSpd(0, 0);
@@ -267,14 +252,7 @@ void handleStopping(void) {
   setSpd(0, 0);
 }
 
-String readKeyboard(void) {
-  String result = "";
-  if (Serial.available()) {
-    result = Serial.readString();
-  }
-  return result;
-}
-
+// Utilities
 void respondKeyboard(String key) {
   if (key == " ") {
     state = STATE_REVERSE;
@@ -283,4 +261,23 @@ void respondKeyboard(String key) {
     state = STATE_STOPPING;
     handleStopping();
   }
+}
+
+/*---------------Interrupt Handler Prototypes---------------*/
+void toggleIr(void) {
+  digitalWrite(IR_E_PIN1, irHigh ? HIGH : LOW);
+  digitalWrite(IR_E_PIN2, irHigh ? HIGH : LOW);
+  irHigh = !irHigh;
+}
+
+void irRisingL(void) {
+  lastRiseL = micros();
+}
+
+void irRisingR(void) {
+  lastRiseR = micros();
+}
+
+void irRisingT(void) {
+  lastRiseT = micros();
 }
