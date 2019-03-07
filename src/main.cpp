@@ -44,7 +44,7 @@
 // Launch system duty cycles range 0-255, which 0 being full duty
 // cycle and 255 being 0% (i.e. PWM_OFF). Firing and loading motors 
 // run at separate duty cycles.
-#define FIRE_DUTY 100
+#define FIRE_DUTY 80
 #define LOAD_DUTY 50
 #define PWM_OFF 255
 
@@ -52,10 +52,10 @@
 // These timers correspond to the time spent in different states. All
 // are in msec.
 #define BACKING_T 500
-#define PIVOTING_T 1900
-#define DEPRESSING_T 500
-#define PUSH_BUTTON_T 300
+#define PIVOTING_T 1500
+#define DEPRESSING_T 1000
 #define RELOADING_T 3000
+#define AIMING_T 1500
 #define FIRING_T 10000
 // The delay between starting the flywheel and the loader to allow 
 // the flywheel to reach full speed. In msec.
@@ -77,8 +77,8 @@ typedef enum {
 // See finite state machine diagram for details
 typedef enum {
   STATE_DRIVING, STATE_BACKING1, STATE_PIVOTING1, STATE_DEPRESSING, 
-  STATE_RELOADING, STATE_BACKING2, STATE_PIVOTING2, STATE_SEEKING, 
-  STATE_FIRING, STATE_LOADING, STATE_STOPPING
+  STATE_RELOADING, STATE_BACKING2, STATE_PIVOTING2, STATE_SEEKING,
+  STATE_AIMING, STATE_FIRING, STATE_LOADING, STATE_STOPPING
 } States_t;
 
 /*---------------Module Function Prototypes-----------------*/
@@ -116,6 +116,7 @@ void handlePivoting(void);
 void handleDepressing(void);
 void handleReloading(void);
 void handleSeeking(void);
+void handleAiming(void);
 void handleFiring(void);
 void handleLoading(void);
 void handleStopping(void);
@@ -135,10 +136,8 @@ static States_t state;
 
 // Driving
 // The navTimer is used to time navigation states (e.g. backing
-// or pivoting). The depressTimer is in case the bump sensor 
-// misses the reloading trigger.
+// or pivoting).
 static Metro navTimer = Metro(0);
-static Metro depressTimer = Metro(PUSH_BUTTON_T);
 
 // IR emit
 // IR sensors emit at 450 Hz
@@ -240,7 +239,7 @@ void loop() {
     // Drive forward to depress the reload trigger. If the
     // bump trigger fails, a backup timer advances the state.
     case STATE_DEPRESSING:
-      if (bump() || depressTimer.check()) {
+      if (bump() || navExpire()) {
         state = STATE_RELOADING;
         handleReloading();
       }
@@ -273,6 +272,15 @@ void loop() {
     case STATE_SEEKING:
       driveOnTape();
       if (isTapeAxle()) {
+        //state = STATE_AIMING;
+        //handleAiming();
+        state = STATE_FIRING;
+        handleFiring();
+      }
+      break;
+    // Back up a fraction of a second to align with King's Landing.
+    case STATE_AIMING:
+      if (navExpire()) {
         state = STATE_FIRING;
         handleFiring();
       }
@@ -553,8 +561,6 @@ void handlePivoting(void) {
 void handleDepressing(void) {
   navTimer.interval(DEPRESSING_T);
   navTimer.reset();
-  // We don't need this timer, navTimer does the same thing.
-  depressTimer.reset();
   Serial.println("DEPRESSING");
   // Come to a stop
   setSpd(0, 0);
@@ -579,6 +585,18 @@ void handleSeeking(void) {
   // Go forwards
   setSpd(MAX_SPD, MAX_SPD);
   setDir(true);
+}
+// Back up a fraction of a second to align with King's Landing
+void handleAiming(void) {
+  Serial.println("AIMING");
+  // Come to a stop
+  setSpd(0, 0);
+  delay(100);
+  navTimer.interval(AIMING_T);
+  navTimer.reset();
+  // Go backwards
+  setSpd(MAX_SPD, MAX_SPD);
+  setDir(false);
 }
 // Start the firing sequence
 void handleFiring(void) {
