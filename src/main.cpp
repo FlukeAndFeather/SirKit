@@ -2,6 +2,8 @@
 #include <Metro.h>
 
 /*---------------Constants----------------------------------*/
+#define ANALOG_DELAY 10
+
 // IR
 #define IR_E1_PIN 16
 #define IR_E2_PIN 21
@@ -17,13 +19,24 @@
 #define DIR_R_PIN 15
 #define MAX_SPD 120
 #define ADJUST_FACTOR 0.65
+#define ROT_LEFT true
+#define ROT_RIGHT false
+
+// Firing and loading
+#define FIRE_SPD_PIN 9
+#define FIRE_DIR_PIN 12
+#define FIRE_DUTY 100
+#define LOAD_SPD_PIN 10
+#define LOAD_DUTY 120
+#define PWM_OFF 255
 
 // Timer durations (msec)
 #define BACKING_T 750
-#define PIVOTING_T 1800
+#define PIVOTING_T 1900
 #define DEPRESSING_T 500
 #define RELOADING_T 3000
-#define FIRING_T 5000
+#define FIRING_T 8000
+#define FIRE_DELAY 1500 //msec
 #define NOISE_T 2000  // usec
 
 // Limit switch
@@ -37,7 +50,7 @@ typedef enum {
 typedef enum {
   STATE_DRIVING, STATE_BACKING1, STATE_PIVOTING1, STATE_DEPRESSING, 
   STATE_RELOADING, STATE_BACKING2, STATE_PIVOTING2, STATE_SEEKING, 
-  STATE_FIRING, STATE_PIVOTING3, STATE_STOPPING
+  STATE_FIRING, STATE_LOADING, STATE_STOPPING
 } States_t;
 
 /*---------------Module Function Prototypes-----------------*/
@@ -45,6 +58,7 @@ typedef enum {
 bool overTape(uint32_t now, Sensor_t sensor);
 bool bump(void);
 bool navExpire(void);
+bool fireExpire(void);
 
 // Driving
 void driveOnTape(void);
@@ -62,6 +76,11 @@ bool isTapeJunction(void);
 bool isTapeAxle(void);
 bool isTapeMiddle(void);
 
+// Firing
+void startFiring(void);
+void startLoading(void);
+void stopFiring(void);
+
 // Handle events
 void handleDriving(void);
 void handleBacking(void);
@@ -70,6 +89,8 @@ void handleDepressing(void);
 void handleReloading(void);
 void handleSeeking(void);
 void handleFiring(void);
+void handleLoading(void);
+void handleStopping(void);
 
 // Utilities
 void respondKeyboard(String key);
@@ -100,6 +121,9 @@ volatile static uint32_t lastRiseM;
 volatile static uint32_t lastRiseR;
 volatile static uint32_t lastRiseA;
 
+// Firing
+static Metro fireTimer = Metro(0);
+
 // Print state timer
 static Metro stateTimer = Metro(500);
 
@@ -123,27 +147,31 @@ void setup() {
   irTimer.begin(toggleIr, irSwitch);
   irHigh = true;
 
-  // SPD and DIR pins
+  // Driving pins
   pinMode(SPD_L_PIN, OUTPUT);
   pinMode(DIR_L_PIN, OUTPUT);
   pinMode(SPD_R_PIN, OUTPUT);
   pinMode(DIR_R_PIN, OUTPUT);
 
+  // Firing pins
+  pinMode(FIRE_SPD_PIN, OUTPUT);
+  pinMode(LOAD_SPD_PIN, OUTPUT);
+  pinMode(FIRE_DIR_PIN, OUTPUT); 
+  analogWrite(FIRE_SPD_PIN, PWM_OFF); 
+  analogWrite(LOAD_SPD_PIN, PWM_OFF);
+  digitalWrite(FIRE_DIR_PIN, HIGH);
+
   // Bump pin
   pinMode(BUMP_PIN, INPUT);
 
   // Start the motor
-  //state = STATE_BACKING2;
-  //handleBacking();
-  state = STATE_DRIVING;
-  handleDriving();
+  state = STATE_FIRING;
+  handleFiring();
+  // state = STATE_DRIVING;
+  // handleDriving();
 }
 
 void loop() {
-  if(stateTimer.check()) {
-    //Serial.println(state);
-  }
-
   switch (state) {
     case STATE_DRIVING:
       driveOnTape();
@@ -196,15 +224,15 @@ void loop() {
       }
       break;
     case STATE_FIRING:
-      if (navExpire()) {
-        state = STATE_PIVOTING3;
-        handlePivoting();
+      if (fireExpire()) {
+        state = STATE_LOADING;
+        handleLoading();
       }
       break;
-    case STATE_PIVOTING3:
-      if (isTapeMiddle()) {
-        state = STATE_DRIVING;
-        handleDriving();
+    case STATE_LOADING:
+      if (navExpire()) {
+        state = STATE_STOPPING;
+        handleStopping();
       }
     case STATE_STOPPING:
       break;
@@ -252,9 +280,13 @@ bool bump(void) {
   return !notBumped;
 }
 
-// Navigation timer expires
+// Timers expire
 bool navExpire(void) {
   return navTimer.check();
+}
+
+bool fireExpire(void) {
+  return fireTimer.check();
 }
 
 // Driving
@@ -264,9 +296,9 @@ void driveOnTape(void) {
   } else if (isTapeJunction()) {
     driveStraight();
   } else if (isTapeLeft()) {
-    rotate(true);
+    rotate(ROT_LEFT);
   } else if (isTapeRight()) {
-    rotate(false);
+    rotate(ROT_RIGHT);
   } else {
     // This is just noise
   }
@@ -376,8 +408,26 @@ bool isTapeMiddle(void) {
   return false;
 }
 
+// Firing
+void startFiring(void) {
+  delay(ANALOG_DELAY);
+  analogWrite(FIRE_SPD_PIN, FIRE_DUTY);
+}
+
+void startLoading(void) {
+  delay(ANALOG_DELAY);
+  analogWrite(LOAD_SPD_PIN, LOAD_DUTY);
+}
+
+void stopFiring(void) {
+  delay(ANALOG_DELAY);
+  analogWrite(FIRE_SPD_PIN, PWM_OFF);
+  analogWrite(LOAD_SPD_PIN, PWM_OFF);
+}
+
 // Handle events
 void handleDriving(void) {
+  Serial.println("DRIVING");
   setSpd(MAX_SPD, MAX_SPD);
   setDir(true);
 }
@@ -385,6 +435,7 @@ void handleDriving(void) {
 void handleBacking(void) {
   navTimer.interval(BACKING_T);
   navTimer.reset();
+  Serial.println("BACKING");
   // Come to a stop
   setSpd(0, 0);
   delay(100);
@@ -396,16 +447,18 @@ void handleBacking(void) {
 void handlePivoting(void) {
   navTimer.interval(PIVOTING_T);
   navTimer.reset();
+  Serial.println("PIVOTING");
   // Come to a stop
   setSpd(0, 0);
   delay(100);
   // Rotate right
-  rotate(false);
+  rotate(ROT_RIGHT);
 }
 
 void handleDepressing(void) {
   navTimer.interval(DEPRESSING_T);
   navTimer.reset();
+  Serial.println("DEPRESSING");
   // Come to a stop
   setSpd(0, 0);
   delay(100);
@@ -417,9 +470,11 @@ void handleReloading(void) {
   setSpd(0, 0);
   navTimer.interval(RELOADING_T);
   navTimer.reset();
+  Serial.println("RELOADING");
 }
 
 void handleSeeking(void) {
+  Serial.println("SEEKING");
   // Come to a stop
   setSpd(0, 0);
   delay(100);
@@ -429,11 +484,29 @@ void handleSeeking(void) {
 }
 
 void handleFiring(void) {
-  Serial.println("FIRING");
   setSpd(0, 0);
-  // !!!FIXME!!!
-  //navTimer.interval(FIRING_T);
-  //navTimer.reset();
+  
+  navTimer.interval(FIRING_T);
+  navTimer.reset();
+
+  fireTimer.interval(FIRE_DELAY);
+  fireTimer.reset();
+
+  Serial.println("FIRING");
+  startFiring();
+}
+
+void handleLoading(void) {
+  setSpd(0, 0);
+
+  Serial.println("LOADING");
+  startLoading();
+}
+
+void handleStopping(void) {
+  setSpd(0, 0);
+  stopFiring();
+  Serial.println("STOPPING");
 }
 
 /*---------------Interrupt Handler Prototypes---------------*/
