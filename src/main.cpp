@@ -17,7 +17,7 @@
 #define DIR_L_PIN 14
 #define SPD_R_PIN 23
 #define DIR_R_PIN 15
-#define MAX_SPD 120
+#define MAX_SPD 175
 #define ADJUST_FACTOR 0.65
 #define ROT_LEFT true
 #define ROT_RIGHT false
@@ -165,10 +165,8 @@ void setup() {
   pinMode(BUMP_PIN, INPUT);
 
   // Start the motor
-  state = STATE_FIRING;
-  handleFiring();
-  // state = STATE_DRIVING;
-  // handleDriving();
+  state = STATE_DRIVING;
+  handleDriving();
 }
 
 void loop() {
@@ -329,6 +327,7 @@ void setDir(bool leftDir, bool rightDir) {
 }
 
 void setSpd(uint16_t left, uint16_t right) {
+  delay(ANALOG_DELAY);
   analogWrite(SPD_L_PIN, left);
   analogWrite(SPD_R_PIN, right);
 }
