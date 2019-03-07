@@ -172,21 +172,18 @@ void loop() {
       break;
     case STATE_RELOADING:
       if (navExpire()) {
-        Serial.println("Reloading timer expired");
         state = STATE_BACKING2;
         handleBacking();
       }
       break;
     case STATE_BACKING2:
       if (isTapeAxle()) {
-        Serial.println("Over axle");
         state = STATE_PIVOTING2;
         handlePivoting();
       }
       break;
     case STATE_PIVOTING2:
       if (isTapeMiddle()) {
-        Serial.println("Middle over tape");
         state = STATE_SEEKING;
         handleSeeking();
       }
@@ -194,7 +191,6 @@ void loop() {
     case STATE_SEEKING:
       driveOnTape();
       if (isTapeAxle()) {
-        Serial.println("Axle over tape");
         state = STATE_FIRING;
         handleFiring();
       }
@@ -434,9 +430,10 @@ void handleSeeking(void) {
 
 void handleFiring(void) {
   Serial.println("FIRING");
+  setSpd(0, 0);
   // !!!FIXME!!!
-  navTimer.interval(FIRING_T);
-  navTimer.reset();
+  //navTimer.interval(FIRING_T);
+  //navTimer.reset();
 }
 
 /*---------------Interrupt Handler Prototypes---------------*/
