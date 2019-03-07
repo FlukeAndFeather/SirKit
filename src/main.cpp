@@ -5,28 +5,29 @@
 // IR
 #define IR_E1_PIN 16
 #define IR_E2_PIN 21
-#define IR_L_PIN 5
-#define IR_M_PIN 111 // !!!FIXME!!!
-#define IR_R_PIN 2
-#define IR_A_PIN 4
+#define IR_L_PIN 2
+#define IR_M_PIN 3
+#define IR_R_PIN 4
+#define IR_A_PIN 5
 
 // Driving
-#define SPD_L_PIN 23 //Based on forward orientation.
-#define DIR_L_PIN 15
-#define SPD_R_PIN 22
-#define DIR_R_PIN 14
-#define MAX_SPD 110
+#define SPD_L_PIN 22 //Based on forward orientation.
+#define DIR_L_PIN 14
+#define SPD_R_PIN 23
+#define DIR_R_PIN 15
+#define MAX_SPD 120
 #define ADJUST_FACTOR 0.65
 
 // Timer durations (msec)
 #define BACKING_T 750
-#define PIVOTING_T 750
-#define DEPRESSING_T 250
-#define RELOADING_T 2000
+#define PIVOTING_T 1800
+#define DEPRESSING_T 500
+#define RELOADING_T 3000
 #define FIRING_T 5000
+#define NOISE_T 2000  // usec
 
 // Limit switch
-#define BUMP_PIN 111 // !!!FIXME!!!
+#define BUMP_PIN 0
 
 /*---------------Enumerations-------------------------------*/
 typedef enum { 
@@ -57,6 +58,7 @@ void setSpd(uint16_t left, uint16_t right);
 bool isTapeAligned(void);
 bool isTapeLeft(void);
 bool isTapeRight(void);
+bool isTapeJunction(void);
 bool isTapeAxle(void);
 bool isTapeMiddle(void);
 
@@ -98,6 +100,9 @@ volatile static uint32_t lastRiseM;
 volatile static uint32_t lastRiseR;
 volatile static uint32_t lastRiseA;
 
+// Print state timer
+static Metro stateTimer = Metro(500);
+
 /*---------------Teensy Main Functions----------------------*/
 void setup() {
   // Connect to Serial
@@ -128,11 +133,17 @@ void setup() {
   pinMode(BUMP_PIN, INPUT);
 
   // Start the motor
+  //state = STATE_BACKING2;
+  //handleBacking();
   state = STATE_DRIVING;
   handleDriving();
 }
 
 void loop() {
+  if(stateTimer.check()) {
+    //Serial.println(state);
+  }
+
   switch (state) {
     case STATE_DRIVING:
       driveOnTape();
@@ -161,18 +172,21 @@ void loop() {
       break;
     case STATE_RELOADING:
       if (navExpire()) {
+        Serial.println("Reloading timer expired");
         state = STATE_BACKING2;
         handleBacking();
       }
       break;
     case STATE_BACKING2:
       if (isTapeAxle()) {
+        Serial.println("Over axle");
         state = STATE_PIVOTING2;
         handlePivoting();
       }
       break;
     case STATE_PIVOTING2:
       if (isTapeMiddle()) {
+        Serial.println("Middle over tape");
         state = STATE_SEEKING;
         handleSeeking();
       }
@@ -180,6 +194,7 @@ void loop() {
     case STATE_SEEKING:
       driveOnTape();
       if (isTapeAxle()) {
+        Serial.println("Axle over tape");
         state = STATE_FIRING;
         handleFiring();
       }
@@ -237,7 +252,8 @@ bool overTape(uint32_t now, Sensor_t sensor) {
 
 // Detect limit switch bump
 bool bump(void) {
-  return digitalRead(BUMP_PIN);
+  bool notBumped = digitalRead(BUMP_PIN);
+  return !notBumped;
 }
 
 // Navigation timer expires
@@ -249,13 +265,14 @@ bool navExpire(void) {
 void driveOnTape(void) {
   if (isTapeAligned()) {
     driveStraight();
+  } else if (isTapeJunction()) {
+    driveStraight();
   } else if (isTapeLeft()) {
     rotate(true);
   } else if (isTapeRight()) {
     rotate(false);
   } else {
-    // This shouldn't happen
-    Serial.println("Tape sensing error");
+    // This is just noise
   }
 }
 
@@ -265,7 +282,7 @@ void driveStraight(void) {
 }
 
 void rotate(bool turnLeft) {
-  uint16_t adjustSpd = ADJUST_FACTOR * MAX_SPD;
+  uint16_t adjustSpd = (int) (ADJUST_FACTOR * MAX_SPD);
   setSpd(adjustSpd, adjustSpd);
 
   bool left = turnLeft;
@@ -274,18 +291,18 @@ void rotate(bool turnLeft) {
 }
 
 void setDir(bool dir) {
-  digitalWrite(DIR_L_PIN, dir);
-  digitalWrite(DIR_R_PIN, dir);
+  digitalWrite(DIR_L_PIN, !dir);
+  digitalWrite(DIR_R_PIN, !dir);
 }
 
 void setDir(bool leftDir, bool rightDir) {
-  digitalWrite(DIR_L_PIN, leftDir);
-  digitalWrite(DIR_R_PIN, rightDir);
+  digitalWrite(DIR_L_PIN, !leftDir);
+  digitalWrite(DIR_R_PIN, !rightDir);
 }
 
 void setSpd(uint16_t left, uint16_t right) {
   analogWrite(SPD_L_PIN, left);
-  analogWrite(SPD_L_PIN, right);
+  analogWrite(SPD_R_PIN, right);
 }
 
 // Tape sensing
@@ -307,7 +324,9 @@ bool isTapeLeft(void) {
   bool L = overTape(now, l_sensor);
   bool R = overTape(now, r_sensor);
   bool T = overTape(now, t_sensor);
-  return L && !R && !T;
+  if (T) return false;
+  if (L && !R) return true;
+  return false;
 }
 
 bool isTapeRight(void) {
@@ -318,17 +337,47 @@ bool isTapeRight(void) {
   bool L = overTape(now, l_sensor);
   bool R = overTape(now, r_sensor);
   bool T = overTape(now, t_sensor);
-  return !L && R && !T;
+  if (T) return false;
+  if (!L && R) return true;
+  return false;
 }
 
+bool isTapeJunction(void) {
+  uint32_t now = micros();
+  Sensor_t r_sensor = state == STATE_DRIVING ? SENSOR_M : SENSOR_R;
+  Sensor_t t_sensor = state == STATE_DRIVING ? SENSOR_R : SENSOR_L;
+  bool R = overTape(now, r_sensor);
+  bool T = overTape(now, t_sensor);
+  return R && T;
+}
+
+// Only counts if we get five trips in under NOISE_T usec
 bool isTapeAxle(void) {
   uint32_t now = micros();
-  return overTape(now, SENSOR_A);
+  bool tapeAxle = overTape(now, SENSOR_A);
+  if (!tapeAxle) return false;
+  int tapeCounter = 1;
+  uint32_t now2 = micros();
+  while (now2 - now < NOISE_T) {
+    if (overTape(now2, SENSOR_A)) tapeCounter++;
+    if (tapeCounter > 10) return true;
+    now2 = micros();
+  }
+  return false;
 }
 
 bool isTapeMiddle(void) {
   uint32_t now = micros();
-  return overTape(now, SENSOR_M);
+  bool tapeMiddle = overTape(now, SENSOR_M);
+  if (!tapeMiddle) return false;
+  int tapeCounter = 1;
+  uint32_t now2 = micros();
+  while (now2 - now < NOISE_T) {
+    if (overTape(now2, SENSOR_M)) tapeCounter++;
+    if (tapeCounter > 10) return true;
+    now2 = micros();
+  }
+  return false;
 }
 
 // Handle events
@@ -344,8 +393,8 @@ void handleBacking(void) {
   setSpd(0, 0);
   delay(100);
   // Back up
-  setSpd(MAX_SPD, MAX_SPD);
   setDir(false);
+  setSpd(MAX_SPD, MAX_SPD);
 }
 
 void handlePivoting(void) {
@@ -364,11 +413,12 @@ void handleDepressing(void) {
   // Come to a stop
   setSpd(0, 0);
   delay(100);
-  // Rotate right
-  rotate(false);
+  // Drive forward
+  driveStraight();
 }
 
 void handleReloading(void) {
+  setSpd(0, 0);
   navTimer.interval(RELOADING_T);
   navTimer.reset();
 }
